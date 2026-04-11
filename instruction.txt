@@ -1,0 +1,185 @@
+cd athena
+cd athena
+
+编译Kelvin-Helmholtz范例
+```bash
+cd athena
+python3 configure.py --prob kh -mpi -hdf5 --include /usr/include/hdf5/openmpi \
+                     --lib_path /usr/lib/x86_64-linux-gnu/hdf5/openmpi
+make
+```
+
+修改配置文件:
+nano inputs/hydro/athinput.kh-shear
+然后就可以修改模拟的精度和范围等条件，注意将output2文件格式改为hdf5格式，使得yt能够读取它们
+
+运行模拟：
+```bash
+./bin/athena -i inputs/hydro/athinput.kh-shear
+```
+模拟分析：
+创建python脚本，使得模拟可视化:
+打开nano编辑器：
+nano plot-(下划线)kh.py
+然后就可以写程序：
+import yt
+
+for n in range(由生成图片的数目决定):
+    ds = yt.load("kh-shear.out2.%05d.athdf" % n)
+    slc = yt.SlicePlot(ds, "z", ["density"])
+    slc.annotate_timestamp()
+    slc.save()
+
+ctrl+o保存，然后enter回车保存，ctrl+x退出
+
+运行python脚本：
+python3 plot-(下划线)kh.py
+
+将生成的图片移动到新创建的文件夹中，便于整合：
+mkdir plots
+mv *.png plots/
+
+查看生成了多少图片：
+ls *.png
+使用vs code查看：
+直接输入 code . 即可
+ 
+图片合成视频：
+~~bash
+# 安装视频工具
+sudo apt update && sudo apt install ffmpeg -y
+
+# 合成视频 (以每秒20帧为例)
+ffmpeg -framerate 20 -i kh-shear.out2.%05d_Slice_z_density.png -vf "scale=trunc(iw/2)*2:trunc(ih/2)*2" -c:v libx264 -pix_fmt yuv420p kh_20fps_movie.mp4
+
+磁流体力学模拟：
+流体是带有磁场的等离子体
+配置命令：
+~~bash
+python3 configure.py --prob kh -b -hdf5 --include /usr/include/hdf5/serial --lib_path /usr/lib/x86_64-linux-gnu/hdf5/serial
+
+make clean
+make -j4
+~~
+
+然后在配置文件中配置磁场强度：
+nano inputs/hydro/athinput.kh-shear
+
+在problem模块中加入初始磁场强度b0：
+<problem>
+iprob = 2
+amp   = 0.01
+vflow = 0.5
+b0    = （根据需要设置磁场强度）
+##磁场越强，不稳定效应越弱
+
+然后正常运行即可
+
+正常的密度切片图脚本：
+import yt
+import glob
+
+# 获取所有 .athdf 文件
+files = sorted(glob.glob("kh-shear.out2.*.athdf"))
+
+for n, f in enumerate(files):
+    ds = yt.load(f)
+    slc = yt.SlicePlot(ds, "z", ["density"])
+    
+    # ==========================================
+    # 核心修改：固定颜色条范围 (Fix Colorbar)
+    # ==========================================
+    
+    # 1. 设置固定的最小值和最大值
+    # 根据你的视频，密度大概在 0.5 到 1.2 之间波动
+    # 我建议设置一个稍微宽一点的范围，比如 0.1 到 1.5，或者 0.5 到 2.0
+    slc.set_zlim("density", 0.5, 1.05)
+    
+    # 2. (可选) 关闭对数刻度，改用线性刻度
+    # KH 不稳定性的密度变化通常不大（比如从 1.0 变到 2.0）
+    # 用线性刻度 (Linear) 往往比对数刻度 (Log) 看起来更平滑、更清晰
+    slc.set_log("density", False) 
+    
+    slc.annotate_timestamp()
+    
+    # 保存图片
+    slc.save()
+    print(f"Processed frame {n}: {f}")
+
+把磁力线和密度分布叠加在一起的切片图脚本：
+import yt
+import glob
+import sys
+
+# 1. 自动寻找最新的 .athdf 文件
+# 我们找序号最大的文件，因为第0帧(00000)通常还没开始演化，磁场不明显
+files = sorted(glob.glob("kh-shear.out2.000*.athdf"))
+
+if not files:
+    print("❌ 错误：当前目录下没有找到 kh-shear.out2.xxxxx.athdf 文件！")
+    sys.exit(1)
+
+# 选择最后一帧数据（效果最明显）
+filename = files[-1]
+print(f"📂 正在读取文件: {filename}")
+
+try:
+    ds = yt.load(filename)
+except Exception as e:
+    print(f"❌ 无法加载文件，文件可能损坏: {e}")
+    sys.exit(1)
+
+# 2. 核心诊断：检查文件里到底有哪些变量
+# Athena++ 的原始磁场变量通常叫 'bcc1', 'bcc2', 'bcc3'
+field_list = [f[1] for f in ds.field_list if f[0] == 'athena_pp']
+print(f"🔍 文件中包含的变量: {field_list}")
+
+# 检查是否存在磁场变量
+has_magnetic_field = 'bcc1' in field_list
+
+if not has_magnetic_field:
+    print("\n" + "="*50)
+    print("⚠️  严重警告：数据文件中没有找到磁场变量 (bcc1)！")
+    print("   这意味着之前的模拟是以【纯流体】模式运行的，或者 b0 设置失效。")
+    print("   脚本将尝试只画密度图...")
+    print("="*50 + "\n")
+    fields_to_plot = ['rho'] # 只画密度
+else:
+    print("✅ 检测到磁场数据 (bcc1, bcc2)，准备绘制磁力线...")
+
+# 3. 开始绘图
+try:
+    # 创建切片图：Z轴切片，显示密度 (rho)
+    # 注意：Athena++ 输出的密度变量名通常是 'rho' 或 'density'
+    slc = yt.SlicePlot(ds, 'z', 'rho')
+
+    # 设置漂亮的颜色 (viridis 适合显示密度层次)
+    slc.set_cmap('rho', 'viridis')
+    slc.set_log('rho', False) # KH不稳定性通常不需要对数坐标，除非密度跨度极大
+
+    # 4. 只有在有磁场数据时，才叠加磁力线
+    if has_magnetic_field:
+        # annotate_streamlines(x场分量, y场分量)
+        # plot_args 控制线条颜色(color)和粗细(linewidth)
+        slc.annotate_streamlines('bcc1', 'bcc2', 
+                               plot_args={'color': 'white', 'linewidth': 0.8, 'alpha': 0.7})
+        
+        # 也可以叠加磁场箭头（可选，如果线条太乱可以用这个）
+        # slc.annotate_quiver('bcc1', 'bcc2', factor=16) 
+
+    # 5. 保存图片
+    output_filename = filename.replace(".athdf", "_mhd_final.png")
+    slc.save(output_filename)
+    print(f"\n🎉 成功！图片已保存为: {output_filename}")
+
+except Exception as e:
+    print(f"\n❌ 绘图过程中发生错误: {e}")
+    # 如果是关于 bcc1 的报错，这里会再次提示
+    if "Could not find field" in str(e):
+        print("💡 提示：这再次确认了你的 .athdf 文件里确实没有磁场数据。")
+
+
+
+
+
+
