@@ -1,5 +1,4 @@
-cd athena
-cd athena
+cd athena 
 
 编译Kelvin-Helmholtz范例
 ```bash
