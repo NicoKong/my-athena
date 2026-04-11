@@ -1,4 +1,4 @@
-# Athena++ Setup Guide
+# Athena++ Setup Guide 
 
 This guide helps you set up and run Athena++, a radiation magnetohydrodynamics code.
 
